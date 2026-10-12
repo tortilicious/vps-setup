@@ -10,7 +10,8 @@ Runbook para levantar Odoo 18 a mano (sin Docker) en un Ubuntu 24.04, detrás de
 
 | Valor en esta guía | De dónde sale |
 |---|---|
-| `CONTRASEÑA_MAESTRA` | Generarla con `openssl rand -base64 24` y guardarla en el gestor de contraseñas. **Nunca** en este repositorio |
+| `CONTRASEÑA_MAESTRA` | Generarla con `openssl rand -base64 24` y guardarla en el gestor de contraseñas. **Nunca** en este repositorio ni en ningún fichero de la máquina |
+| `HASH_CONTRASEÑA_MAESTRA` | El hash que se calcula en el paso 3 a partir de la contraseña maestra. Tampoco va al repositorio |
 | `odoo.mlozano.dev` | El subdominio que apunte a la máquina |
 | `89.58.45.111` y la IPv6 | `ip -4 address show dev eth0` y `ip -6 address show dev eth0 scope global` en la máquina |
 | `test-db` | El nombre de la base que se cree en el paso 4 |
@@ -137,6 +138,14 @@ sudo chmod 640 /etc/odoo/odoo.conf
 
 `/etc` es la configuración. El fichero se crea vacío y se protege **antes** de escribir el secreto: root escribe, el grupo `odoo` lee, los demás nada (`rw-r-----`).
 
+Hash de la contraseña maestra, para no guardarla en claro en el fichero:
+
+```
+/opt/odoo/venv/bin/python -c "from getpass import getpass; from passlib.context import CryptContext; print(CryptContext(schemes=['pbkdf2_sha512'], pbkdf2_sha512__rounds=600000).hash(getpass()))"
+```
+
+Odoo 18 acepta en `admin_passwd` un hash `pbkdf2_sha512` (600 000 rondas) o texto plano, obsoleto (`odoo/tools/config.py`, `crypt_context`). El gestor de bases solo escribe el hash si Odoo puede escribir en `odoo.conf`, y aquí no puede (es de root); además, se cierra en el paso 4 (`list_db = False`). Así que se calcula a mano con la `passlib` del venv. `getpass()` pide la contraseña sin mostrarla y sin dejarla en el historial. Sin `sudo`: solo se lee el venv. La salida empieza por `$pbkdf2-sha512$600000$`.
+
 ```
 sudoedit /etc/odoo/odoo.conf
 ```
@@ -148,7 +157,7 @@ Contenido inicial (las opciones de seguridad se añaden en el paso 4, después d
 http_interface = 127.0.0.1
 addons_path = /opt/odoo/src/addons,/opt/odoo/src/odoo/addons
 data_dir = /var/lib/odoo
-admin_passwd = CONTRASEÑA_MAESTRA
+admin_passwd = HASH_CONTRASEÑA_MAESTRA
 ```
 
 | Línea | Por qué |
@@ -157,7 +166,7 @@ admin_passwd = CONTRASEÑA_MAESTRA
 | `http_interface` | Solo local: a Odoo se llega a través de nginx o del túnel, nunca directamente |
 | `addons_path` | Dónde están los módulos |
 | `data_dir` | *Filestore* y sesiones en `/var/lib/odoo` |
-| `admin_passwd` | Contraseña maestra del gestor de bases. Sin ella, el defecto es `admin` |
+| `admin_passwd` | Hash de la contraseña maestra del gestor de bases. Sin la línea, el defecto es `admin`. El hash va tal cual, sin comillas (`$` no es especial en este fichero) |
 
 ```
 sudo -u odoo cat /etc/odoo/odoo.conf
@@ -165,6 +174,14 @@ cat /etc/odoo/odoo.conf
 ```
 
 Comprobación: el primero muestra el contenido; el segundo, como tu usuario, `Permission denied`.
+
+```
+sudo /opt/odoo/venv/bin/python -c "from getpass import getpass; from configparser import RawConfigParser; from passlib.context import CryptContext; c = RawConfigParser(); c.read('/etc/odoo/odoo.conf'); print(CryptContext(schemes=['pbkdf2_sha512']).verify(getpass(), c['options']['admin_passwd']))"
+```
+
+Comprobación: con la contraseña maestra del gestor, imprime `True`. Con el gestor cerrado no se usará hasta una restauración, así que conviene saber ahora que el hash quedó bien pegado.
+
+⚠️ Sin probar en una instalación nueva: crear la base del paso 4 desde el gestor con `admin_passwd` ya en hash desde el principio (el código lo admite: `verify_admin_password`). En la máquina original se pasó a hash después.
 
 ## 4. Primer arranque y primera base
 
@@ -436,17 +453,49 @@ sudo systemctl reload nginx
 | Navegador | Imprimir un presupuesto | PDF con cabecera y pie |
 | VPS | Cerrar las pestañas de Odoo y `sudo grep 'GET /websocket' /var/log/nginx/access.log \| tail -n 3` | Código `101` |
 
+**HSTS y cookie de sesión segura.** certbot no añade ninguna de las dos. Copia previa (se borra tras comprobar) y edición:
+
+```
+cp /etc/nginx/sites-available/odoo ~/odoo.nginx.antes-hsts
+sudoedit /etc/nginx/sites-available/odoo
+```
+
+Dentro del bloque del 443, **fuera** de los `location` (por ejemplo, debajo de `server_name`):
+
+```nginx
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
+        proxy_cookie_flags session_id samesite=lax secure;
+```
+
+| Línea | Por qué |
+|---|---|
+| `add_header Strict-Transport-Security …` | El navegador usará solo HTTPS con este nombre durante un año. En el bloque del 80 no sirve: el navegador ignora HSTS recibida por `http` |
+| `proxy_cookie_flags session_id samesite=lax secure` | Odoo crea `session_id` solo con `HttpOnly`; nginx le añade `Secure` (solo viaja por HTTPS) y `SameSite=Lax` (protección contra CSRF). Requiere nginx ≥ 1.19.3 |
+| A nivel de `server` | Los dos `location` heredan las dos directivas. Si algún `location` define su propio `add_header` o `proxy_cookie_flags`, deja de heredar **todos** los del nivel superior |
+
+```
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+**Comprobaciones:**
+
+| Dónde | Qué | Resultado esperado |
+|---|---|---|
+| Portátil | `curl -I http://odoo.mlozano.dev/` | `301` a `https://` y **sin** `Strict-Transport-Security` |
+| Portátil | `curl -I https://odoo.mlozano.dev/` | `Strict-Transport-Security: max-age=31536000; includeSubDomains` y `Set-Cookie: session_id=…; HttpOnly; Path=/; Secure; SameSite=Lax` |
+| Navegador | Cerrar sesión, entrar de nuevo y navegar | La sesión se mantiene |
+
+**Contraseña del administrador de la base.** Si en el paso 7 se inició sesión en Odoo por `http`, esa contraseña viajó en claro: cambiarla ahora desde la interfaz (avatar → *Mi perfil* → *Seguridad de la cuenta* → *Cambiar contraseña*), con la nueva guardada antes en el gestor. Para no tener que hacerlo, no iniciar sesión por `http` en el paso 7.
+
 ## 10. Pendiente de completar
 
-- Cambiar la contraseña del administrador de la base desde la interfaz de Odoo.
-- Pasar `admin_passwd` a hash (Odoo 18, *Deploying Odoo* → «Security»).
-- Añadir en el bloque del 443 `add_header Strict-Transport-Security …` y `proxy_cookie_flags session_id samesite=lax secure;`.
 - Contrastar esta guía con el journal de `sudo` del VPS (Sesión 11).
 
 ## Secretos
 
 | Secreto | Dónde vive | En este repo |
 |---|---|---|
-| Contraseña maestra (`admin_passwd`) | `/etc/odoo/odoo.conf` (`root:odoo 640`) y el gestor de contraseñas | **No** |
+| Contraseña maestra | En claro, solo en el gestor de contraseñas. En `/etc/odoo/odoo.conf` (`root:odoo 640`), solo su hash (`admin_passwd`) | **No** |
 | Contraseña del administrador de `test-db` | Hash en la tabla `res_users` de la base; en claro, solo en el gestor de contraseñas | **No** |
 | Clave privada del certificado | `/etc/letsencrypt/live/odoo.mlozano.dev/privkey.pem` (solo root) | **No** |
