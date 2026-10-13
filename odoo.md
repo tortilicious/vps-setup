@@ -486,6 +486,40 @@ sudo systemctl reload nginx
 | Portátil | `curl -I https://odoo.mlozano.dev/` | `Strict-Transport-Security: max-age=31536000; includeSubDomains` y `Set-Cookie: session_id=…; HttpOnly; Path=/; Secure; SameSite=Lax` |
 | Navegador | Cerrar sesión, entrar de nuevo y navegar | La sesión se mantiene |
 
+**HTTP/2.** Por defecto, nginx acuerda HTTP/1.1 con el navegador. Copia previa (se borra tras comprobar) y edición:
+
+```
+cp /etc/nginx/sites-available/odoo ~/odoo.nginx.antes-http2
+sudoedit /etc/nginx/sites-available/odoo
+```
+
+Sin `sudo` en el `cp`: el sitio lo puede leer cualquiera y la copia queda a tu nombre. En las **dos** líneas `listen` del bloque del 443, añadir `http2` detrás de `ssl` (las del 80 se quedan igual):
+
+```nginx
+    listen [::]:443 ssl ipv6only=on http2; # managed by Certbot
+    listen 443 ssl http2; # managed by Certbot
+```
+
+| Qué | Por qué |
+|---|---|
+| Parámetro `http2` de `listen` | Es la forma en nginx 1.24. La directiva `http2 on;` no existe hasta la 1.25.1; desde esa versión, el parámetro sigue funcionando pero avisa de que está obsoleto |
+| Solo en el 443 | HTTP/2 se acuerda dentro del *handshake* TLS (ALPN), y en el 80 no hay TLS. Los navegadores no usan HTTP/2 sin TLS |
+
+```
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+**Comprobaciones:**
+
+| Dónde | Qué | Resultado esperado |
+|---|---|---|
+| Portátil | `curl -v https://odoo.mlozano.dev 2>&1 \| grep -E 'ALPN\|using'` | `ALPN: server accepted h2` y `using HTTP/2` |
+| Portátil | `curl -I https://odoo.mlozano.dev/` | Línea de estado `HTTP/2 303` y cabeceras en minúsculas; HSTS y cookie `Secure` siguen ahí |
+| VPS | Cerrar las pestañas de Odoo y `sudo grep 'GET /websocket' /var/log/nginx/access.log \| tail -n 3` | `HTTP/1.1" 101`: nginx 1.24 no lleva websockets sobre HTTP/2 y el navegador abre una conexión HTTP/1.1 aparte |
+
+Tras comprobar: `rm ~/odoo.nginx.antes-http2`.
+
 **Contraseña del administrador de la base.** Si en el paso 7 se inició sesión en Odoo por `http`, esa contraseña viajó en claro: cambiarla ahora desde la interfaz (avatar → *Mi perfil* → *Seguridad de la cuenta* → *Cambiar contraseña*), con la nueva guardada antes en el gestor. Para no tener que hacerlo, no iniciar sesión por `http` en el paso 7.
 
 ## 10. Pendiente de completar
