@@ -12,7 +12,7 @@ Guion para levantar Odoo 18 a mano (sin Docker) en Ubuntu 24.04, detrás de ngin
 
 | Valor | Dónde aparece | De dónde sale |
 |---|---|---|
-| `DOMINIO` | `nginx/odoo.http`, `nginx/odoo`, pasos 8 y 9 | El subdominio que apunte a la máquina |
+| `DOMINIO` | `nginx/odoo`, pasos 8 y 9 | El subdominio que apunte a la máquina |
 | `NOMBRE_BASE` | `odoo/odoo.conf`, pasos 3 y 4 | El nombre que se elija para la base (se crea en el paso 4) |
 | `IDIOMA` | Paso 4 | Código del idioma, con el formato `es_ES` (español de España) |
 | `HASH_CONTRASEÑA_MAESTRA` | `odoo/odoo.conf` | Se calcula en el paso 3. **No** va a este repositorio |
@@ -192,10 +192,37 @@ Build oficial con Qt parcheado: con el `wkhtmltopdf` de Ubuntu, los PDF salen si
 
 **Dónde:** VPS.
 
-**Instalar nginx.**
-
 ```
 sudo apt install nginx
+```
+
+El sitio de Odoo se crea en el paso 9, cuando ya existe el certificado.
+
+## 8. DNS
+
+**Dónde:** panel de Cloudflare y equipo local.
+
+| Tipo | Nombre | Contenido | Proxy |
+|---|---|---|---|
+| `A` | subdominio de `DOMINIO` | IPv4 de la máquina | **DNS only** |
+| `AAAA` | subdominio de `DOMINIO` | IPv6 de la máquina | **DNS only** |
+
+DNS only para que el único proxy sea nginx.
+
+## 9. HTTPS
+
+**Dónde:** VPS.
+
+**Instalar certbot.** Desde los repositorios de Ubuntu, sin snap.
+
+```
+sudo apt install certbot python3-certbot-nginx
+```
+
+**Pedir el certificado.** `certonly` lo obtiene sin tocar ningún sitio de nginx; Let's Encrypt valida el dominio por el puerto 80.
+
+```
+sudo certbot certonly --nginx -d DOMINIO
 ```
 
 **Desactivar el sitio de bienvenida.** Se borra solo su enlace en `sites-enabled`; el fichero sigue en `sites-available`.
@@ -204,7 +231,7 @@ sudo apt install nginx
 sudo rm /etc/nginx/sites-enabled/default
 ```
 
-**Crear el sitio de Odoo.** Pegar el contenido de [`nginx/odoo.http`](nginx/odoo.http) y sustituir `DOMINIO`.
+**Crear el sitio de Odoo.** Pegar el contenido de [`nginx/odoo`](nginx/odoo) y sustituir `DOMINIO`.
 
 ```
 sudoedit /etc/nginx/sites-available/odoo
@@ -223,35 +250,10 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 8. DNS
-
-**Dónde:** panel de Cloudflare y equipo local.
-
-| Tipo | Nombre | Contenido | Proxy |
-|---|---|---|---|
-| `A` | subdominio de `DOMINIO` | IPv4 de la máquina | **DNS only** |
-| `AAAA` | subdominio de `DOMINIO` | IPv6 de la máquina | **DNS only** |
-
-DNS only para que el único proxy sea nginx.
-
-## 9. HTTPS
-
-**Dónde:** VPS.
+**Simular la renovación.** Debe acabar en `all simulated renewals succeeded`; la renovación real la lanza `certbot.timer`.
 
 ```
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d DOMINIO
 sudo certbot renew --dry-run
-```
-
-certbot desde los repositorios de Ubuntu, sin snap. Pide el certificado (Let's Encrypt valida el dominio por el puerto 80) y edita el sitio. El simulacro de renovación debe acabar en `all simulated renewals succeeded`; la renovación real la lanza `certbot.timer`.
-
-**Sitio final.** Reemplazar todo el contenido por el de [`nginx/odoo`](nginx/odoo) y sustituir `DOMINIO`.
-
-```
-sudoedit /etc/nginx/sites-available/odoo
-sudo nginx -t
-sudo systemctl reload nginx
 ```
 
 Al actualizar nginx a 1.25.1 o posterior: el parámetro `http2` de los `listen` pasa a la directiva `http2 on;`.
