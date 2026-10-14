@@ -1,0 +1,14 @@
+[Unit]
+Description=Odoo service
+After=postgresql@16-main.service
+Wants=postgresql@16-main.service
+
+[Service]
+User=odoo
+ExecStart=/opt/odoo/venv/bin/python /opt/odoo/src/odoo-bin -c /etc/odoo/odoo.conf
+Type=exec
+UMask=0027
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
