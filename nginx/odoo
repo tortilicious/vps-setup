@@ -1,5 +1,5 @@
 # Sitio de nginx para Odoo, con HTTPS.
-# Se crea en el paso 9 de odoo.md, DESPUÉS de pedir el certificado:
+# Se crea en el paso 9 de manual.md, DESPUÉS de pedir el certificado:
 # las rutas de /etc/letsencrypt solo existen cuando certbot lo ha emitido.
 # Sustituir DOMINIO en todas sus apariciones. Se copia a /etc/nginx/sites-available/odoo.
 
