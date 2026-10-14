@@ -1,8 +1,6 @@
 # Odoo 18 desde cero
 
-Guion para levantar Odoo 18 a mano (sin Docker) en Ubuntu 24.04, detrás de nginx y con HTTPS. Cada paso indica dónde se ejecuta, el comando y una línea de porqué.
-
-**Punto de partida:** la máquina de `sistema.md`: usuario propio con `sudo` y acceso SSH solo por clave con el alias `vps`.
+Guion para levantar Odoo 18 a mano (sin Docker) en un servidor con Ubuntu 24.04, detrás de nginx y con HTTPS, empezando por la máquina recién instalada. Cada paso indica dónde se ejecuta, el comando y una línea de porqué.
 
 **Ficheros de configuración:** están en las carpetas `odoo/`, `systemd/` y `nginx/` de este repositorio. En cada paso se crea el fichero en el servidor con `sudoedit` y se pega su contenido, con los valores ya sustituidos.
 
@@ -12,17 +10,107 @@ Guion para levantar Odoo 18 a mano (sin Docker) en Ubuntu 24.04, detrás de ngin
 
 | Valor | Dónde aparece | De dónde sale |
 |---|---|---|
-| `DOMINIO` | `nginx/odoo`, pasos 8 y 9 | El subdominio que apunte a la máquina |
-| `NOMBRE_BASE` | `odoo/odoo.conf`, pasos 3 y 4 | El nombre que se elija para la base (se crea en el paso 4) |
-| `IDIOMA` | Paso 4 | Código del idioma, con el formato `es_ES` (español de España) |
-| `HASH_CONTRASEÑA_MAESTRA` | `odoo/odoo.conf` | Se calcula en el paso 3. **No** va a este repositorio |
-| IPv4 e IPv6 de la máquina | Paso 8 | `ip -4 address show dev eth0` e `ip -6 address show dev eth0 scope global` |
+| `IP_SERVIDOR` | Pasos 2, 3 y 12 | El panel del proveedor (IPv4). La IPv6, con `ip -6 address show dev eth0 scope global` |
+| `USUARIO` | Pasos 2 y 3 | El nombre que se elija para el usuario propio |
+| `DOMINIO` | `nginx/odoo`, pasos 12 y 13 | El subdominio que apunte a la máquina |
+| `NOMBRE_BASE` | `odoo/odoo.conf`, pasos 7 y 8 | El nombre que se elija para la base (se crea en el paso 8) |
+| `IDIOMA` | Paso 8 | Código del idioma, con el formato `es_ES` (español de España) |
+| `HASH_CONTRASEÑA_MAESTRA` | `odoo/odoo.conf` | Se calcula en el paso 7. **No** va a este repositorio |
 
-**No iniciar sesión en Odoo por `http`** antes del paso 9: la contraseña viajaría en claro.
+**No iniciar sesión en Odoo por `http`** antes del paso 13: la contraseña viajaría en claro.
 
 ---
 
-## 1. PostgreSQL y el usuario de Odoo
+## 1. Sistema operativo
+
+**Dónde:** panel del proveedor.
+
+**Comprobar la consola de recuperación.** Localizar en el panel la consola web (VNC o similar) y entrar una vez. Es la vía de acceso si SSH falla, y no depende de él.
+
+**Instalar la imagen.** Ubuntu 24.04 LTS, amd64. El panel entrega la IP, la contraseña inicial de root y las huellas de las claves de host: guardarlas en el gestor de contraseñas.
+
+## 2. Usuario propio con sudo
+
+**Dónde:** equipo local, conectado como root.
+
+```
+ssh root@IP_SERVIDOR
+```
+
+En la primera conexión, comparar la huella que muestra SSH con la del panel antes de aceptar.
+
+**Dónde:** servidor, como root.
+
+```
+adduser USUARIO
+usermod -aG sudo USUARIO
+```
+
+`-aG`: añade el grupo `sudo` sin quitar los demás. Sin `-a`, `-G` reemplaza todos los grupos del usuario.
+
+```
+apt update
+apt install nano
+```
+
+La imagen minimal no trae editor, y `sudoedit` lo necesita.
+
+## 3. Acceso por clave SSH
+
+**Dónde:** equipo local.
+
+**Generar el par de claves**, con *passphrase*. La clave privada (`~/.ssh/id_ed25519`) no sale nunca del equipo local.
+
+```
+ssh-keygen -t ed25519 -C "USUARIO@IP_SERVIDOR"
+```
+
+**Instalar la clave pública en el servidor.**
+
+```
+ssh-copy-id USUARIO@IP_SERVIDOR
+```
+
+**Alias de conexión.** Añadir a `~/.ssh/config`:
+
+```
+Host vps
+    HostName IP_SERVIDOR
+    User USUARIO
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+```
+
+A partir de aquí, `ssh vps`.
+
+## 4. Endurecer SSH
+
+**Dónde:** servidor (`ssh vps`). **No cerrar esta sesión** hasta el final del paso.
+
+**Desactivar el acceso de root y por contraseña.** En `/etc/ssh/sshd_config`, dejar estas tres directivas activas (sin `#`), antes de cualquier bloque `Match`:
+
+```
+sudoedit /etc/ssh/sshd_config
+```
+
+```
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+```
+
+`KbdInteractiveAuthentication no`: sin ella, PAM puede seguir pidiendo contraseña. Si un cambio no surte efecto, revisar `/etc/ssh/sshd_config.d/`: se lee antes y gana el primer valor.
+
+**Validar y aplicar.** `restart`, no `reload`: con `reload` no se aplicó el cambio de métodos de autenticación. La sesión abierta no se corta.
+
+```
+sudo sshd -t
+sudo systemctl restart ssh
+```
+
+**Antes de cerrar la sesión:** desde una segunda terminal del equipo local, `ssh vps` entra, y `ssh -o PubkeyAuthentication=no vps` es rechazado.
+
+## 5. PostgreSQL y el usuario de Odoo
 
 **Dónde:** VPS.
 
@@ -43,7 +131,7 @@ sudo -u postgres createuser --createdb odoo
 
 Rol `odoo`, solo con permiso para crear bases. Se llama igual que el usuario de Linux para que funcione la autenticación `peer`.
 
-## 2. Código de Odoo y entorno Python
+## 6. Código de Odoo y entorno Python
 
 **Dónde:** VPS.
 
@@ -92,7 +180,7 @@ Librerías de Odoo dentro de su entorno. `phonenumbers` no está en `requirement
 
 Si falla por un fichero que falta: `sudo apt install apt-file`, `sudo apt-file update` y `apt-file search --regexp '/NOMBRE_DEL_FICHERO$'` (el nombre sale del mensaje de error).
 
-## 3. Configuración de Odoo
+## 7. Configuración de Odoo
 
 **Dónde:** VPS.
 
@@ -127,7 +215,7 @@ Pegar el contenido de [`odoo/odoo.conf`](odoo/odoo.conf) y sustituir `HASH_CONTR
 | `dbfilter = ^NOMBRE_BASE$` | Odoo solo usa esa base y no muestra selector |
 | `proxy_mode = True` | Odoo se fía de las cabeceras `X-Forwarded-*` de nginx |
 
-## 4. Base de datos Odoo
+## 8. Base de datos Odoo
 
 **Terminal 1 (VPS):**
 
@@ -157,9 +245,9 @@ Túnel: el 10000 del equipo local lleva al 8069 del VPS sin abrirlo a internet. 
 
 **Terminal 1:** `Ctrl+C`.
 
-**Antes del paso 7**, que expone Odoo: cerrar sesión y confirmar que `admin` / `admin` ya no entra.
+**Antes del paso 13**, que expone Odoo: cerrar sesión y confirmar que `admin` / `admin` ya no entra.
 
-## 5. Odoo como servicio
+## 9. Odoo como servicio
 
 **Dónde:** VPS.
 
@@ -171,9 +259,9 @@ sudo systemctl enable --now odoo
 sudo chmod -R g-w,o-rwx /var/lib/odoo
 ```
 
-Contenido: [`systemd/odoo.service`](systemd/odoo.service). `Wants=` y no `Requires=`: si PostgreSQL se para, Odoo sigue vivo y se reconecta solo. `UMask=0027`: lo que crea Odoo nace sin acceso para los demás; el `chmod` corrige lo creado en el paso 4, antes de que existiera.
+Contenido: [`systemd/odoo.service`](systemd/odoo.service). `Wants=` y no `Requires=`: si PostgreSQL se para, Odoo sigue vivo y se reconecta solo. `UMask=0027`: lo que crea Odoo nace sin acceso para los demás; el `chmod` corrige lo creado en el paso 8, antes de que existiera.
 
-## 6. Informes PDF
+## 10. Informes PDF
 
 **Dónde:** VPS.
 
@@ -188,7 +276,7 @@ Build oficial con Qt parcheado: con el `wkhtmltopdf` de Ubuntu, los PDF salen si
 
 **Navegador (por el túnel):** Ajustes → Técnico → Parámetros del sistema → crear `report.url` = `http://127.0.0.1:8069`. wkhtmltopdf pide estilos y fuentes al propio VPS; sin este parámetro usaría `web.base.url`, que puede no ser alcanzable desde dentro.
 
-## 7. Nginx
+## 11. Nginx
 
 **Dónde:** VPS.
 
@@ -196,9 +284,9 @@ Build oficial con Qt parcheado: con el `wkhtmltopdf` de Ubuntu, los PDF salen si
 sudo apt install nginx
 ```
 
-El sitio de Odoo se crea en el paso 9, cuando ya existe el certificado.
+El sitio de Odoo se crea en el paso 13, cuando ya existe el certificado.
 
-## 8. DNS
+## 12. DNS
 
 **Dónde:** panel de Cloudflare y equipo local.
 
@@ -209,7 +297,7 @@ El sitio de Odoo se crea en el paso 9, cuando ya existe el certificado.
 
 DNS only para que el único proxy sea nginx.
 
-## 9. HTTPS
+## 13. HTTPS
 
 **Dónde:** VPS.
 
@@ -262,6 +350,9 @@ Al actualizar nginx a 1.25.1 o posterior: el parámetro `http2` de los `listen` 
 
 | Secreto | Dónde vive | En este repo |
 |---|---|---|
+| Contraseña de root inicial y huellas de host | Gestor de contraseñas | **No** |
+| Contraseña de `USUARIO` (la pide `sudo`) | Gestor de contraseñas | **No** |
+| Clave privada SSH y su *passphrase* | `~/.ssh/id_ed25519` en el equipo local; la *passphrase*, en el gestor | **No** |
 | Contraseña maestra | En claro, solo en el gestor de contraseñas. En `/etc/odoo/odoo.conf` (`root:odoo 640`), solo su hash | **No** |
 | Contraseña del administrador de la base | Hash en `res_users`; en claro, solo en el gestor | **No** |
 | Clave privada del certificado | `/etc/letsencrypt/live/DOMINIO/privkey.pem` (solo root) | **No** |
